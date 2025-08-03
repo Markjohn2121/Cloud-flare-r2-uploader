@@ -1,107 +1,52 @@
-require('dotenv').config();
-const express = require('express');
-const fileUpload = require('express-fileupload');
-const morgan = require('morgan');
-const cors = require('cors');
-const AWS = require('aws-sdk');
+import express from "express";
+import multer from "multer";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import dotenv from "dotenv";
 
-// Initialize Express app
+dotenv.config();
+
 const app = express();
+const port = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
-app.use(morgan('dev'));
-app.use(express.json());
-app.use(fileUpload({
-    useTempFiles: true,
-    tempFileDir: '/tmp/'
-}));
+// Multer to parse multipart/form-data
+const upload = multer();
 
-// Configure AWS SDK for Cloudflare R2
-const s3 = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT, // e.g. "https://<accountid>.r2.cloudflarestorage.com"
+// Cloudflare R2 S3 client
+const s3 = new S3Client({
+  region: "auto",
+  endpoint: process.env.R2_ENDPOINT,
+  credentials: {
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    signatureVersion: 'v4',
-    region: 'auto'
+  },
 });
 
-// Health check endpoint
-app.get('/', (req, res) => {
-    res.status(200).json({
-        status: 'success',
-        message: 'R2 Upload Server is running',
-        timestamp: new Date().toISOString()
-    });
+app.post("/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded." });
+  }
+
+  const bucketName = process.env.R2_BUCKET;
+  const objectKey = Date.now() + "-" + req.file.originalname;
+
+  try {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: objectKey,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype,
+      })
+    );
+
+    const publicUrl = `${process.env.PUBLIC_URL}/${objectKey}`;
+    res.json({ url: publicUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Upload failed." });
+  }
 });
 
-// File upload endpoint
-app.post('/upload', async (req, res) => {
-    try {
-        if (!req.files || !req.files.file) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'No file uploaded'
-            });
-        }
-
-        const file = req.files.file;
-        if (!file.data || file.size === 0) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'Uploaded file is empty'
-            });
-        }
-
-        const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
-
-        // Upload parameters (NO ACL)
-        const params = {
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: fileName,
-            Body: file.data,
-            ContentType: file.mimetype
-        };
-
-        // Upload to R2
-        await s3.upload(params).promise();
-
-        // Construct the public URL
-        const publicUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
-
-        res.status(200).json({
-            status: 'success',
-            message: 'File uploaded successfully',
-            data: {
-                fileName: fileName,
-                publicUrl: publicUrl,
-                fileSize: file.size,
-                mimeType: file.mimetype
-            }
-        });
-    } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Failed to upload file',
-            error: error.message
-        });
-    }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({
-        status: 'error',
-        message: 'Internal server error',
-        error: err.message
-    });
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV}`);
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
 });
