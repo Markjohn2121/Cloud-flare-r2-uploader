@@ -4,8 +4,6 @@ const fileUpload = require('express-fileupload');
 const morgan = require('morgan');
 const cors = require('cors');
 const AWS = require('aws-sdk');
-const path = require('path');
-const fs = require('fs');
 
 // Initialize Express app
 const app = express();
@@ -21,7 +19,7 @@ app.use(fileUpload({
 
 // Configure AWS SDK for Cloudflare R2
 const s3 = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
+    endpoint: process.env.R2_ENDPOINT, // e.g. "https://<accountid>.r2.cloudflarestorage.com"
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     signatureVersion: 'v4',
@@ -40,7 +38,6 @@ app.get('/', (req, res) => {
 // File upload endpoint
 app.post('/upload', async (req, res) => {
     try {
-        // Check if file was uploaded
         if (!req.files || !req.files.file) {
             return res.status(400).json({
                 status: 'error',
@@ -49,21 +46,27 @@ app.post('/upload', async (req, res) => {
         }
 
         const file = req.files.file;
+        if (!file.data || file.size === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Uploaded file is empty'
+            });
+        }
+
         const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
-        
-        // Upload parameters
+
+        // Upload parameters (NO ACL)
         const params = {
             Bucket: process.env.R2_BUCKET_NAME,
             Key: fileName,
             Body: file.data,
-            ContentType: file.mimetype,
-            ACL: 'public-read' // Make the file publicly accessible
+            ContentType: file.mimetype
         };
 
         // Upload to R2
-        const uploadResult = await s3.upload(params).promise();
+        await s3.upload(params).promise();
 
-        // Construct public URL
+        // Construct the public URL
         const publicUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
 
         res.status(200).json({
