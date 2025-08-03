@@ -1,19 +1,19 @@
-import express from "express";
-import multer from "multer";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import dotenv from "dotenv";
+import express from 'express';
+import multer from 'multer';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const upload = multer(); // store file in memory
 
-// Multer to parse multipart/form-data
-const upload = multer();
+app.use(cors());
+app.use(express.json());
 
-// Cloudflare R2 S3 client
 const s3 = new S3Client({
-  region: "auto",
+  region: 'auto',
   endpoint: process.env.R2_ENDPOINT,
   credentials: {
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
@@ -21,32 +21,34 @@ const s3 = new S3Client({
   },
 });
 
-app.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded." });
-  }
-
-  const bucketName = process.env.R2_BUCKET;
-  const objectKey = Date.now() + "-" + req.file.originalname;
-
+app.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucketName,
-        Key: objectKey,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-      })
-    );
+    const file = req.file;
+    const filename = `${Date.now()}-${file.originalname}`;
+    const bucket = process.env.R2_BUCKET_NAME;
 
-    const publicUrl = `${process.env.PUBLIC_URL}/${objectKey}`;
-    res.json({ url: publicUrl });
+    console.log(`Uploading to Bucket: ${bucket}`);
+    console.log(`File size: ${file.size} bytes`);
+    console.log(`Key: ${filename}`);
+
+    const uploadParams = {
+      Bucket: bucket,
+      Key: filename,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    };
+
+    await s3.send(new PutObjectCommand(uploadParams));
+
+    const publicUrl = `${process.env.R2_PUBLIC_URL}/${filename}`;
+    res.status(200).json({ success: true, url: publicUrl });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Upload failed." });
+    console.error('Upload failed:', err);
+    res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
