@@ -1,54 +1,79 @@
-import express from 'express';
-import multer from 'multer';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-
-dotenv.config();
-
+require('dotenv').config();
+const express = require('express');
+const fileUpload = require('express-fileupload');
+const AWS = require('aws-sdk');
 const app = express();
-const upload = multer(); // store file in memory
 
-app.use(cors());
-app.use(express.json());
+// Middleware - Must include these exact options
+app.use(fileUpload({
+    useTempFiles: false, // Critical change
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+    abortOnLimit: true
+}));
 
-const s3 = new S3Client({
-  region: 'auto',
-  endpoint: process.env.R2_ENDPOINT,
-  credentials: {
+// Configure AWS S3 for Cloudflare R2
+const s3 = new AWS.S3({
+    endpoint: process.env.R2_ENDPOINT,
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-  },
+    signatureVersion: 'v4',
+    region: 'auto'
 });
 
-app.post('/upload', upload.single('file'), async (req, res) => {
-  try {
-    const file = req.file;
-    const filename = `${Date.now()}-${file.originalname}`;
-    const bucket = process.env.R2_BUCKET_NAME;
+// Upload endpoint
+app.post('/upload', async (req, res) => {
+    try {
+        // Validate file exists
+        if (!req.files || Object.keys(req.files).length === 0) {
+            return res.status(400).json({ 
+                status: 'error',
+                message: 'No files were uploaded' 
+            });
+        }
 
-    console.log(`Uploading to Bucket: ${bucket}`);
-    console.log(`File size: ${file.size} bytes`);
-    console.log(`Key: ${filename}`);
+        const file = req.files.file;
 
-    const uploadParams = {
-      Bucket: bucket,
-      Key: filename,
-      Body: file.buffer,
-      ContentType: file.mimetype,
-    };
+        // Validate file data exists
+        if (!file.data || file.data.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'File data is empty'
+            });
+        }
 
-    await s3.send(new PutObjectCommand(uploadParams));
+        const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
 
-    const publicUrl = `${process.env.R2_PUBLIC_URL}/${filename}`;
-    res.status(200).json({ success: true, url: publicUrl });
-  } catch (err) {
-    console.error('Upload failed:', err);
-    res.status(500).json({ error: 'Upload failed', details: err.message });
-  }
+        const params = {
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: fileName,
+            Body: file.data, // Ensure we're using the file buffer
+            ContentType: file.mimetype,
+            ACL: 'public-read'
+        };
+
+        // Upload to R2
+        const uploadResult = await s3.upload(params).promise();
+
+        res.json({
+            status: 'success',
+            message: 'File uploaded successfully',
+            data: {
+                fileName: fileName,
+                publicUrl: uploadResult.Location,
+                fileSize: file.size,
+                mimeType: file.mimetype
+            }
+        });
+
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Failed to upload file',
+            error: error.message
+        });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
