@@ -1,79 +1,86 @@
 require('dotenv').config();
 const express = require('express');
 const fileUpload = require('express-fileupload');
-const AWS = require('aws-sdk');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const cors = require('cors');
+const morgan = require('morgan');
 const app = express();
 
-// Middleware - Must include these exact options
+// Middleware
+app.use(cors());
+app.use(morgan('dev'));
 app.use(fileUpload({
-    useTempFiles: false, // Critical change
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
-    abortOnLimit: true
+  useTempFiles: false,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 }));
 
-// Configure AWS S3 for Cloudflare R2
-const s3 = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
+// S3 Client Configuration for Cloudflare R2
+const s3 = new S3Client({
+  region: 'auto',
+  endpoint: process.env.R2_ENDPOINT,
+  credentials: {
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    signatureVersion: 'v4',
-    region: 'auto'
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
+  },
+  forcePathStyle: true // Required for R2
 });
 
-// Upload endpoint
+// Upload Endpoint
 app.post('/upload', async (req, res) => {
-    try {
-        // Validate file exists
-        if (!req.files || Object.keys(req.files).length === 0) {
-            return res.status(400).json({ 
-                status: 'error',
-                message: 'No files were uploaded' 
-            });
-        }
-
-        const file = req.files.file;
-
-        // Validate file data exists
-        if (!file.data || file.data.length === 0) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'File data is empty'
-            });
-        }
-
-        const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
-
-        const params = {
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: fileName,
-            Body: file.data, // Ensure we're using the file buffer
-            ContentType: file.mimetype,
-            ACL: 'public-read'
-        };
-
-        // Upload to R2
-        const uploadResult = await s3.upload(params).promise();
-
-        res.json({
-            status: 'success',
-            message: 'File uploaded successfully',
-            data: {
-                fileName: fileName,
-                publicUrl: uploadResult.Location,
-                fileSize: file.size,
-                mimeType: file.mimetype
-            }
-        });
-
-    } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Failed to upload file',
-            error: error.message
-        });
+  try {
+    if (!req.files?.file) {
+      return res.status(400).json({ 
+        status: 'error',
+        message: 'No file uploaded' 
+      });
     }
+
+    const file = req.files.file;
+    const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
+
+    // Upload to R2 using S3 API
+    const uploadParams = {
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: fileName,
+      Body: file.data,
+      ContentType: file.mimetype,
+      ACL: 'public-read'
+    };
+
+    await s3.send(new PutObjectCommand(uploadParams));
+
+    // Generate public URL (R2-specific format)
+    const publicUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
+
+    res.json({
+      status: 'success',
+      message: 'File uploaded successfully',
+      data: {
+        fileName,
+        publicUrl,
+        fileSize: file.size,
+        mimeType: file.mimetype
+      }
+    });
+
+  } catch (error) {
+    console.error('S3 Upload Error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to upload file',
+      error: error.message
+    });
+  }
+});
+
+// Health Check
+app.get('/', (req, res) => {
+  res.send('R2 S3 Uploader is running');
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`S3 Endpoint: ${process.env.R2_ENDPOINT}`);
+});
