@@ -1,16 +1,14 @@
-import express from "express";
-import multer from "multer";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+// Load environment variables first
+require("dotenv").config();
+
+const express = require("express");
+const multer = require("multer");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Multer setup para sa file upload
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
-
-// Cloudflare R2 client setup
-const r2 = new S3Client({
+const s3 = new S3Client({
   region: "auto",
   endpoint: `https://${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`,
   credentials: {
@@ -19,41 +17,26 @@ const r2 = new S3Client({
   },
 });
 
-// Upload route
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    const bucketName = process.env.CLOUDFLARE_BUCKET;
-    const key = `${Date.now()}-${req.file.originalname}`;
-
+    const file = req.file;
     const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype,
+      Bucket: process.env.CLOUDFLARE_BUCKET_NAME,
+      Key: file.originalname,
+      Body: file.buffer,
+      ContentType: file.mimetype,
     });
 
-    await r2.send(command);
+    await s3.send(command);
 
-    const fileUrl = `https://${process.env.CLOUDFLARE_BUCKET}.${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com/${key}`;
-
-    res.json({
-      message: "Upload successful",
-      url: fileUrl,
-    });
+    res.json({ message: "File uploaded successfully!" });
   } catch (err) {
     console.error("Upload error:", err);
-    res.status(500).json({ error: "Upload failed", details: err.message });
+    res.status(500).json({ error: "File upload failed" });
   }
 });
 
-app.get("/", (req, res) => {
-  res.send("Cloudflare R2 Uploader is running 🚀");
-});
-
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
