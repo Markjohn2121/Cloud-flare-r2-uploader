@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
 
 const app = express();
 
@@ -16,30 +16,48 @@ const {
   R2_ACCESS_KEY_ID,
   R2_SECRET_ACCESS_KEY,
   R2_BUCKET_NAME,
-  R2_ACCOUNT_ID
+  R2_ENDPOINT,
 } = process.env;
 
-// Cloudflare R2 Client
-const r2 = new S3Client({
+// Configure S3 client for Cloudflare R2
+const s3Client = new S3Client({
   region: "auto",
-  endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  endpoint: R2_ENDPOINT,
   credentials: {
     accessKeyId: R2_ACCESS_KEY_ID,
     secretAccessKey: R2_SECRET_ACCESS_KEY,
   },
 });
 
-// Upload function to R2
-async function uploadToR2(path, contentBuffer, contentType) {
-  const command = new PutObjectCommand({
+async function uploadToR2(path, contentBuffer) {
+  const uploadParams = {
     Bucket: R2_BUCKET_NAME,
     Key: path,
     Body: contentBuffer,
-    ContentType: contentType,
-  });
+  };
 
-  await r2.send(command);
-  return path; // return path only, not full URL
+  try {
+    // Check if file exists (not needed for upload but kept for consistency with original code)
+    try {
+      await s3Client.send(new HeadObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: path,
+      }));
+    } catch (e) {
+      if (e.name !== 'NotFound') {
+        throw e;
+      }
+    }
+
+    // Upload the file
+    await s3Client.send(new PutObjectCommand(uploadParams));
+    
+    // Return just the path as requested
+    return path;
+  } catch (err) {
+    console.error("Error uploading to R2:", err);
+    throw err;
+  }
 }
 
 // Health check endpoint
@@ -59,13 +77,13 @@ app.post("/upload", upload.fields([{ name: "file1" }, { name: "file2" }]), async
     if (req.files.file1) {
       const file1 = req.files.file1[0];
       const file1Path = `${folder}/${file1.originalname}`;
-      results.file1Path = await uploadToR2(file1Path, file1.buffer, file1.mimetype);
+      results.file1URL = await uploadToR2(file1Path, file1.buffer);
     }
     
     if (req.files.file2) {
       const file2 = req.files.file2[0];
       const file2Path = `${folder}/${file2.originalname}`;
-      results.file2Path = await uploadToR2(file2Path, file2.buffer, file2.mimetype);
+      results.file2URL = await uploadToR2(file2Path, file2.buffer);
     }
     
     // Validate at least one file was uploaded
@@ -76,11 +94,10 @@ app.post("/upload", upload.fields([{ name: "file1" }, { name: "file2" }]), async
     res.json({
       success: true,
       message: "Files uploaded successfully",
-      ...results,
-      note: "Thank you for watching."
+      ...results
     });
   } catch (err) {
-    console.error(err);
+    console.error(err.response?.data || err);
     res.status(500).json({ 
       error: "Upload failed", 
       details: err.message 
