@@ -3,6 +3,8 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
+const path = require("path");
+const mime = require("mime-types");
 
 const app = express();
 
@@ -29,15 +31,18 @@ const s3Client = new S3Client({
   },
 });
 
-async function uploadToR2(path, contentBuffer) {
+async function uploadToR2(path, contentBuffer, originalname) {
+  const contentType = mime.lookup(originalname) || 'application/octet-stream';
+  
   const uploadParams = {
     Bucket: R2_BUCKET_NAME,
     Key: path,
     Body: contentBuffer,
+    ContentType: contentType,
   };
 
   try {
-    // Check if file exists (not needed for upload but kept for consistency with original code)
+    // Check if file exists (optional, just maintaining consistency with original code)
     try {
       await s3Client.send(new HeadObjectCommand({
         Bucket: R2_BUCKET_NAME,
@@ -49,10 +54,9 @@ async function uploadToR2(path, contentBuffer) {
       }
     }
 
-    // Upload the file
+    // Upload the file with proper content type
     await s3Client.send(new PutObjectCommand(uploadParams));
     
-    // Return just the path as requested
     return path;
   } catch (err) {
     console.error("Error uploading to R2:", err);
@@ -77,16 +81,15 @@ app.post("/upload", upload.fields([{ name: "file1" }, { name: "file2" }]), async
     if (req.files.file1) {
       const file1 = req.files.file1[0];
       const file1Path = `${folder}/${file1.originalname}`;
-      results.file1URL = await uploadToR2(file1Path, file1.buffer);
+      results.file1URL = await uploadToR2(file1Path, file1.buffer, file1.originalname);
     }
     
     if (req.files.file2) {
       const file2 = req.files.file2[0];
       const file2Path = `${folder}/${file2.originalname}`;
-      results.file2URL = await uploadToR2(file2Path, file2.buffer);
+      results.file2URL = await uploadToR2(file2Path, file2.buffer, file2.originalname);
     }
     
-    // Validate at least one file was uploaded
     if (!req.files.file1 && !req.files.file2) {
       return res.status(400).json({ error: "At least one file is required" });
     }
