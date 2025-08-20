@@ -41,6 +41,8 @@ async function uploadToR2(path, contentBuffer, originalname) {
     Key: path,
     Body: contentBuffer,
     ContentType: contentType,
+    // Add Cache-Control headers for optimal caching
+    CacheControl: 'public, max-age=604800, immutable',
   };
 
   try {
@@ -56,7 +58,7 @@ async function uploadToR2(path, contentBuffer, originalname) {
       }
     }
 
-    // Upload the file with proper content type
+    // Upload the file with proper content type and cache headers
     await s3Client.send(new PutObjectCommand(uploadParams));
     
     return path;
